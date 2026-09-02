@@ -1,0 +1,18 @@
+# render96ex_op v0.4.2 - split volume manifest
+#
+# The big installer payload now ships DIRECTLY as compressed 7z
+# volumes (no restool.zip wrapper): each parts/<target>.7z.001
+# volume set extracts straight to the <target> folder.
+#
+# One line per volume set:
+#   <target>  <type: dir|file>  <files>  <bytes>  <first volume>
+#
+# Verification on the device (all automatic, logged in
+# logs/detailed.txt):
+#   1. every volume's md5 + size vs parts/volumes.md5
+#   2. 7-Zip's own per-file CRC check during extraction
+#   3. extracted file count + total bytes vs this manifest
+#   4. executable bits re-applied from parts/exec.txt
+#      (7z volumes do not carry unix permissions - this list
+#      restores them exactly as the original zip had them)
+restool  dir  3318  157091308  restool.7z.001

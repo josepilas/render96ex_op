@@ -1,0 +1,239 @@
+#!/bin/bash
+# =====================================================================
+# find_sm64_rom -- flexible Super Mario 64 ROM finder / converter
+# Part of "Render96ex R36S Optimized"
+#
+# Drop a genuine Super Mario 64 USA ROM into the "original" folder of
+# the port - ANY file name, ANY common N64 dump format:
+#     .z64 (big endian)   .v64 (byte swapped)   .n64 (little endian)
+# Dumps carrying a 0x2000-byte copier header are handled too, and the
+# good old "baserom.us.z64 in the port folder" method keeps working.
+#
+# The original file is never modified, renamed or deleted - a converted
+# big-endian copy is produced and verified, then handed to the installer.
+#
+# usage: find_sm64_rom <target_baserom_z64> [gamedir]
+#   exit 0 : US ROM found, converted and placed at <target>
+#   exit 1 : no ROM candidate found at all
+#   exit 2 : candidate(s) found but none is a compatible US ROM
+# =====================================================================
+
+set -u
+
+TARGET="${1:-}"
+GAMEDIR="${2:-$(pwd)}"
+
+SM64US_SHA1="9bef1128717f958171a4afac3ed78ee2bb4e86ce"
+SM64US_MD5="20b854b239203baf6c961b850a4a51a2"
+SM64EU_SHA1="4ac5721683d0e0b6bbb561b58a71740845dceea9"
+SM64JP_SHA1="8a20a5c83d6ceb0f0506cfc9fa20d8f438cafe51"
+SM64SH_SHA1="3f319ae697533a255a1003d09202379d78d5a2e0"
+
+if [ -z "$TARGET" ]; then
+  echo "find_sm64_rom: usage: $0 <target_baserom_z64> [gamedir]"
+  exit 1
+fi
+
+TMPDIR_ROM="${GAMEDIR}/.romtmp"
+mkdir -p "$TMPDIR_ROM" 2>/dev/null
+
+hash_tool="none"
+command -v sha1sum >/dev/null 2>&1 && hash_tool="sha1sum"
+
+echo "find_sm64_rom: looking for a Super Mario 64 USA rom in ${GAMEDIR}/original (any name, .z64/.n64/.v64) ..."
+
+# ---------- helpers ----------------------------------------------------
+
+magic_at() { # $1 file, $2 byte offset -> echoes 8 hex chars of 4 magic bytes
+  od -An -v -tx1 -j "$2" -N 4 "$1" 2>/dev/null | tr -d ' \n'
+}
+
+detect_format() { # $1 file -> echoes z64|v64|n64|headered|unknown
+  local m0 m2k
+  m0=$(magic_at "$1" 0)
+  case "$m0" in
+    80371240) echo "z64"      ; return 0 ;;
+    37804012) echo "v64"      ; return 0 ;;
+    40123780) echo "n64"      ; return 0 ;;
+  esac
+  # some dumps carry a 8 KiB copier/trainer header
+  m2k=$(magic_at "$1" 8192)
+  case "$m2k" in
+    80371240) echo "headered-z64" ; return 0 ;;
+    37804012) echo "headered-v64" ; return 0 ;;
+    40123780) echo "headered-n64" ; return 0 ;;
+  esac
+  echo "unknown"
+}
+
+to_big_endian() { # $1 input, $2 fmt (z64|v64|n64), $3 output
+  case "$2" in
+    z64)
+      cat "$1" > "$3"
+      ;;
+    v64)
+      # swap every pair of bytes
+      dd if="$1" of="$3" conv=swab bs=1M 2>/dev/null
+      ;;
+    n64)
+      # reverse every 4-byte word: use python3 (PortMaster environments
+      # ship it); fall back to a clear error if unavailable
+      if command -v python3 >/dev/null 2>&1; then
+        python3 - "$1" "$3" <<'PYEOF'
+import sys, array
+src, dst = sys.argv[1], sys.argv[2]
+with open(src, 'rb') as f:
+    data = f.read()
+if len(data) % 4:
+    data = data[:len(data) - (len(data) % 4)]
+a = array.array('I')
+a.frombytes(data)
+a.byteswap()
+with open(dst, 'wb') as f:
+    f.write(a.tobytes())
+PYEOF
+      else
+        return 9
+      fi
+      ;;
+  esac
+  return 0
+}
+
+check_region() { # $1 = big-endian z64 file -> echoes US|EU|JP|SH|unknown
+  local h=""
+  if [ "$hash_tool" = "sha1sum" ]; then
+    h=$(sha1sum "$1" 2>/dev/null | cut -d' ' -f1)
+    case "$h" in
+      "$SM64US_SHA1") echo "US" ; return 0 ;;
+      "$SM64EU_SHA1") echo "EU" ; return 0 ;;
+      "$SM64JP_SHA1") echo "JP" ; return 0 ;;
+      "$SM64SH_SHA1") echo "SH" ; return 0 ;;
+    esac
+  fi
+  local m
+  m=$(md5sum "$1" 2>/dev/null | cut -d' ' -f1)
+  if [ "$m" = "$SM64US_MD5" ]; then
+    echo "US"; return 0
+  fi
+  echo "unknown (sha1=${h:-n/a} md5=${m:-n/a})"
+  return 0
+}
+
+try_candidate() { # $1 = rom file ; returns 0 if US rom installed to TARGET
+  local f="$1" fmt region
+  fmt=$(detect_format "$f")
+  echo "find_sm64_rom: candidate: ${f} [${fmt}]"
+  case "$fmt" in
+    unknown)
+      echo "           not an N64 rom image - skipping"
+      return 1
+      ;;
+  esac
+
+  local raw="${TMPDIR_ROM}/stripped.z64"
+  rm -f "$raw" "${TMPDIR_ROM}/converted.z64"
+
+  # strip copier header if present
+  case "$fmt" in
+    headered-*) dd if="$f" of="$raw" bs=8192 skip=1 2>/dev/null ;;
+    *)          cp "$raw" /dev/null 2>/dev/null; cat "$f" > "$raw" ;;
+  esac
+
+  # inner byte order
+  local inner="${fmt#headered-}"
+  if ! to_big_endian "$raw" "$inner" "${TMPDIR_ROM}/converted.z64"; then
+    echo "           error: little endian (.n64) rom detected but python3 is not"
+    echo "           available on this device for the conversion - please convert"
+    echo "           the rom to .z64 or .v64 format first"
+    return 1
+  fi
+
+  region=$(check_region "${TMPDIR_ROM}/converted.z64")
+  echo "           region check: ${region}"
+
+  case "$region" in
+    US)
+      mkdir -p "$(dirname "$TARGET")"
+      cat "${TMPDIR_ROM}/converted.z64" > "$TARGET"
+      rm -f "$raw" "${TMPDIR_ROM}/converted.z64"
+      ROM_COPY_SRC="$f"   # remembered so the caller can keep a local copy
+      echo "find_sm64_rom: Yahoo! Compatible USA rom installed as ${TARGET}"
+      echo "                (your original file was left untouched)"
+      return 0
+      ;;
+    EU|JP|SH)
+      echo "           Oh, no! This is the ${region} version of Super Mario 64."
+      echo "           This port needs the USA version (sha1 ${SM64US_SHA1})."
+      ;;
+    *)
+      echo "           Oh, no! This rom is not a genuine Super Mario 64 image."
+      echo "           ${region}"
+      echo "           A proper US rom has sha1 ${SM64US_SHA1}"
+      echo "           or md5 ${SM64US_MD5}."
+      ;;
+  esac
+  rm -f "$raw" "${TMPDIR_ROM}/converted.z64"
+  return 1
+}
+
+# ---------- scan -------------------------------------------------------
+
+FOUND_ANY=0
+
+try_all_in() { # stdin: NUL-separated candidate paths; returns 0 on success
+  while IFS= read -r -d '' c; do
+    [ -z "$c" ] && continue
+    FOUND_ANY=1
+    if try_candidate "$c"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+if [ -d "${GAMEDIR}/original" ]; then
+  if try_all_in < <(find "${GAMEDIR}/original" -maxdepth 3 -type f \
+              \( -iname '*.z64' -o -iname '*.n64' -o -iname '*.v64' \) -print0 2>/dev/null); then
+    rmdir "$TMPDIR_ROM" 2>/dev/null
+    exit 0
+  fi
+fi
+
+# upgrading from the previous release: the rom may still live in the old
+# "render96ex" port folder next to this one - use it (and copy it into
+# the new original/ folder so future installs find it directly)
+if [ -d "${GAMEDIR}/../render96ex/original" ]; then
+  echo "find_sm64_rom: also looking in the previous render96ex folder ..."
+  if try_all_in < <(find "${GAMEDIR}/../render96ex/original" -maxdepth 3 -type f \
+              \( -iname '*.z64' -o -iname '*.n64' -o -iname '*.v64' \) -print0 2>/dev/null); then
+    # keep a local copy for future reinstalls (the old file stays untouched)
+    if [ -n "${ROM_COPY_SRC:-}" ] && [ -f "${ROM_COPY_SRC}" ]; then
+      mkdir -p "${GAMEDIR}/original" 2>/dev/null
+      cp -n "${ROM_COPY_SRC}" "${GAMEDIR}/original/" 2>/dev/null
+      echo "find_sm64_rom: (a copy of your rom was placed in ${GAMEDIR}/original)"
+    fi
+    rmdir "$TMPDIR_ROM" 2>/dev/null
+    exit 0
+  fi
+fi
+
+# legacy: baserom.us.z64 (or any .z64) directly in the port folder
+if try_all_in < <(find "${GAMEDIR}" -maxdepth 1 -type f -iname '*.z64' -print0 2>/dev/null); then
+  rmdir "$TMPDIR_ROM" 2>/dev/null
+  exit 0
+fi
+
+# legacy: baserom.us.z64 directly in the old port folder
+if try_all_in < <(find "${GAMEDIR}/../render96ex" -maxdepth 1 -type f -iname '*.z64' -print0 2>/dev/null); then
+  rmdir "$TMPDIR_ROM" 2>/dev/null
+  exit 0
+fi
+
+rm -rf "${TMPDIR_ROM:?}" 2>/dev/null
+
+if [ "$FOUND_ANY" -eq 0 ]; then
+  echo "find_sm64_rom: no rom file (.z64 / .n64 / .v64) found"
+  exit 1
+fi
+exit 2

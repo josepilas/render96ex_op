@@ -1,0 +1,129 @@
+## R36S Optimized edition
+
+This is a fixed and hardened repack of the port, aimed at 1 GB RAM handhelds like the R36S:
+
+* **Star crash fixed** - the game no longer closes itself after collecting the first or second star. Root cause: the Dynos audio pack loop points were authored for 44100 Hz WAVs, but on sub-2 GB devices the installer converts the music to 11025 Hz; the engine converts loop values into raw byte offsets without bounds checking, so the audio callback read past the buffer and crashed (wing cap / underground / Bowser themes). A sanitizer (`tools/fix_audio_loops`) now reads the real WAV headers and rewrites every loop point to the actual sample rate, hard-clamped inside the buffer. It runs right after installation **and on every launch**, so already-built game folders from the old installer are repaired automatically.
+* **Flexible rom input** - see *Game data files needed* above.
+* **Self-healing launcher** - if the game is still killed by a signal (memory pressure, ...), the external HQ music pack is disabled automatically and the game is retried once; a crash log is kept in `crashlog.txt`.
+* Small fixes: recovered memory before each start, repaired inverted error checks in the installer.
+
+See *README-R36S-OPTIMIZED.txt* for full details.
+
+## Notes
+
+Thanks to [Render96](https://linktr.ee/Render96) team for developping this port and to [Retro Aesthetics](https://retroaesthetics.net/) team for the huge work on the 3D models.
+
+Sources: https://github.com/Render96/Render96ex
+
+I also have to say a big thank you to my fellow testers.
+
+## Disclaimer
+
+You must own a legal copy of the Super Mario 64 rom.
+
+**Don't ask Portmaster for help on how to obtain this copy.**
+
+## Game data files needed:
+
+**R36S Optimized edition:** drop your Super Mario 64 **USA** rom in the *render96ex/original* folder - **any file name** and any of the *.z64* / *.v64* / *.n64* formats (dumps with a copier header are handled too). The rom is detected, converted to big-endian *.z64* and hash-verified automatically on the first launch, then the patcher installs the assets from the rom and packages.
+
+The old method still works: copy your rom as *baserom.us.z64* to the root of the *render96ex* folder.
+
+**Only the US version of the ROM is supported in this port.**
+
+The SHA1 sum of *baserom.us.z64* is *9bef1128717f958171a4afac3ed78ee2bb4e86ce*.
+The MD5 sum of *baserom.us.z64* is *20b854b239203baf6c961b850a4a51a2*.
+
+## Optional packages
+
+This port comes with 3 optional packages:
+* HD gfx textures pack, a lowmem resize version of [RENDER96-HD-TEXTURE-PACK](https://github.com/pokeheadroom/RENDER96-HD-TEXTURE-PACK/).
+* Dynos audio pack, a lowmem resampled version (22.05 kHz) from the [Rendex96ex](https://github.com/Render96/Render96ex) project.
+* Dynos 3D model pack, a lowmem resized version of [Render96 Alpha v3.1 modelpack](https://github.com/Render96/ModelPack). 
+
+## Important notes
+
+The extraction of the assets from the rom will temporary uses up to 1 GB of extra storage. Be sure to have at least this amount of free space before launching the game for the first time or it will fail.
+
+The Dynos 3D model pack is installed but not enabled by default because on most handheld the game will be choppy when combined with the 60 fps feature. You have to enable it in the dynos menu.
+
+The 60 fps feature is enabled by default. If your device can not handle it and the game is running choppy you can try to disable it in the display options in the option menu. Then wait few seconds to let the framerate stabilize.
+
+You may need to adjust your gamepad configuration in the option menu depending on your CFW and the handheld model.
+
+If you have updated the port and still have control issues with D-PAD only handheld (weird shoulder button ghost inputs for exemple) try to reset the configuration, see here below **How to reset configuration**. 
+
+## Menus
+
+The option menu can be accessed during the game by pressing **Start** then **R1** (this is R on N64 gamepad).
+
+The Dynos menu can be accessed during the game by pressing **Start** then **L2** (this is Z on N64 gamepad).
+
+## How to reset configuration
+
+If you did something wrong in the configuration (option menu) and the game won't start anymore you can reset to default by deleting/renaming *render96ex/conf/sm64config.txt*.
+
+If you did something wrong in the dynos configuration (dynos menu) and the game won't start anymore you can reset to default by deleting/renaming *render96ex/conf/DynOS.1.1.alpha.config.txt*.
+
+## Controls
+
+### 2 sticks devices
+
+| Button | Action |
+|--|--| 
+|DPAD|Movement (walk)|
+|LSTICK|Movement (run)|
+|RSTICK|Camera|
+|L1|Duck (Z)|
+|R1|Change camera mode (R)|
+|R2|Camera right|
+|L2|Camera left|
+|A|Camera zoom out|
+|X|Camera zoom in/Make mario run/walk slower|
+|B|Jump|
+|Y|Action|
+|Start|Start/Pause|
+
+### 1 stick devices
+
+| Button | Action |
+|--|--| 
+|DPAD|Movement (walk)|
+|LSTICK|Movement (run)|
+|L1|Duck (Z)|
+|R1|Change camera mode (R)|
+|R2|Camera right|
+|L2|Camera left|
+|A|Camera zoom out|
+|X|Camera zoom in/Make mario run/walk slower|
+|B|Jump|
+|Y|Action|
+|Start|Start/Pause|
+
+### 0 stick devices
+
+| Button | Action |
+|--|--| 
+|DPAD|Movement (run)|
+|L1|Duck (Z)|
+|R1|Change camera mode (R)|
+|R2|Camera right|
+|L2|Camera left|
+|A|Camera zoom out|
+|X|Camera zoom in/Make mario walk|
+|B|Jump|
+|Y|Action|
+|Start|Start/Pause|
+
+## Compile
+
+```
+git clone -b tester_rt64alpha https://github.com/cdeletre/Render96ex.git
+docker build --platform=linux/arm64 -t render96ex-aarch64 .
+docker run --rm -v ${PWD}:/render96 render96ex-aarch64 make NOEXTRACT=1 USE_GLES=1 -j4
+mv build/us_pc/sm64.us.f3dex2e sm64.us.f3dex2e.aarch64
+```
+
+For more details see [README.md](https://github.com/cdeletre/Render96ex/tree/tester_rt64alpha)
+
+If you need to tune the content of `restool.zip` it is available here https://github.com/cdeletre/R96ex-restool

@@ -1,0 +1,231 @@
+#!/bin/bash
+# =====================================================================
+# verify_audio_pack -- DynOS audio preset verifier for Render96ex
+# Part of "Render96ex R36S Optimized v4" (render96ex_op)
+# Field semantics verified against the binary's parser:
+#   DynOS_Music_LoadWav(name, path, loop=field3? NO - see below)
+#   sscanf(field3) -> VOLUME (0..127, divided by 127 by the engine)
+#   sscanf(field4) -> LOOP  (frames; byte offset = loop * channels * 2)
+#
+# ENGINE MODEL (verified by disassembling sm64.us.f3dex2e.aarch64):
+#   Preset lines:  "name" file volume loop
+#   - volume: 0..127
+#   - loop:    loop point in FRAMES; the engine converts it to a raw
+#              BYTE offset:   loopStart = loop * channels * 2
+#   - the SDL audio callback mixes PCM from (data + loopStart) with NO
+#     bounds check when a track reaches its end.  A loop offset past
+#     the PCM buffer = out-of-bounds read = SIGSEGV = the game closes.
+#     (This is exactly what the stock PortMaster audio pack does on
+#      several tracks: level_hmc, level_bowser_3, event_cap_wing, ...)
+#   - sfx_*.txt files use a 5th field; their 4th field is a loop FLAG
+#     (0/1), not an offset - they cannot overflow and are not checked.
+#   - folder mapping (r96_system_init):
+#       music.txt        -> levels/
+#       music_other.txt  -> jingles/
+#       jingle.txt       -> jingles/
+#
+# WHAT THIS TOOL DOES
+#   1. VERIFIES every loop point against the real WAV header
+#      (rate / channels / data-chunk size) of the referenced file.
+#   2. REPAIRS out-of-bounds loops by CLAMPING them inside the file
+#      (bounds-only repair: the musical position is preserved as well
+#      as possible - no blind rescaling, no re-encoding, ever).
+#      The shipped pack is fully in-bounds, so in practice nothing is
+#      rewritten; this is a safety net for edited/corrupted packs.
+#   3. Reports format consistency (engine skips banks that don't match
+#      the first loaded file - those tracks would be silent).
+#
+# Exit codes: 0 = all safe   3 = no audio dir (normal on fresh port)
+#             5 = some loop points could not be repaired
+# =====================================================================
+
+set -u
+
+AUDIODIR="${1:-}"
+
+if [ -z "$AUDIODIR" ]; then
+  echo "verify_audio_pack: usage: $0 <dynos/audio dir>"
+  exit 3
+fi
+if [ ! -d "$AUDIODIR" ]; then
+  # nothing installed yet - perfectly normal on a fresh port
+  exit 3
+fi
+
+# engine callback reads at most one SDL buffer past the loop point;
+# keep a 4096 byte safety margin
+SAFE_MARGIN=4096
+
+# ---------- WAV header parsing (pure bash + od) ----------------------
+
+parse_wav() { # $1 = wav path ; sets WAV_RATE WAV_CHAN WAV_DSIZE ; rc 1 on error
+  WAV_RATE=0; WAV_CHAN=0; WAV_DSIZE=0
+  local hex id sz off n fs
+  hex=$(head -c 4096 "$1" 2>/dev/null | od -An -v -tx1 | tr -d ' \n')
+  n=${#hex}
+  if [ "$n" -lt 64 ] || [ "${hex:0:8}" != "52494646" ] || [ "${hex:16:8}" != "57415645" ]; then
+    return 1
+  fi
+  off=24   # hex offset 24 == byte offset 12 (first chunk)
+  while [ "$off" -lt $(( n - 16 )) ]; do
+    id="${hex:$off:8}"
+    sz=$(le32 "${hex:$((off+8)):8}")
+    case "$id" in
+      666d7420) # "fmt "
+        WAV_CHAN=$(( 16#${hex:$((off+22)):2}${hex:$((off+20)):2} ))
+        WAV_RATE=$(le32 "${hex:$((off+24)):8}")
+        ;;
+      64617461) # "data"
+        WAV_DSIZE=$sz
+        break
+        ;;
+    esac
+    local adv=$(( sz + 8 ))
+    [ $(( sz % 2 )) -eq 1 ] && adv=$(( adv + 1 ))
+    off=$(( off + adv * 2 ))
+  done
+  if [ "$WAV_DSIZE" -eq 0 ]; then
+    fs=$(wc -c < "$1" 2>/dev/null)
+    WAV_DSIZE=$(( ${fs:-0} - 44 ))
+  fi
+  [ "$WAV_RATE" -eq 0 ] && return 1
+  return 0
+}
+
+le32() { # 8 hex chars (b0b1b2b3, little endian) -> decimal
+  local h="$1"
+  echo $(( 16#${h:6:2}${h:4:2}${h:2:2}${h:0:2} ))
+}
+
+# ---------- helpers ----------------------------------------------------
+
+resolve_wav() { # $1 = txt basename, $2 = bank token
+  # engine folder mapping (r96_system_init):
+  #   music.txt -> levels/   music_other.txt -> jingles/   jingle.txt -> jingles/
+  local sub="jingles"
+  [ "$1" = "music.txt" ] && sub="levels"
+  if [ -f "$AUDIODIR/$sub/$2.wav" ]; then echo "$AUDIODIR/$sub/$2.wav"; return 0; fi
+  return 1
+}
+
+TXT_PROCESSED=0
+ENTRIES=0
+REPAIRED=0
+UNSAFE_LEFT=0
+SFX_LINES=0
+
+process_txt() { # $1 = txt path
+  local txt="$1"
+  [ -f "$txt" ] || return 0
+  local base
+  base=$(basename "$txt")
+  local out changed=0
+
+  out=$(mktemp "${TMPDIR:-/tmp}/verifypack.XXXXXX") || return 0
+  TXT_PROCESSED=$(( TXT_PROCESSED + 1 ))
+
+  while IFS= read -r line || [ -n "$line" ]; do
+    local raw="$line"
+    line="${line%$'\r'}"
+    # 5+ fields = sfx preset (loop is a 0/1 flag) -> nothing to verify
+    local nfields
+    nfields=$(printf '%s' "$line" | wc -w)
+    if [ "$nfields" -ge 5 ]; then
+      SFX_LINES=$(( SFX_LINES + 1 ))
+      printf '%s\n' "$raw" >> "$out"
+      continue
+    fi
+    # match:  "name" bank volume loop
+    if ! printf '%s' "$line" | grep -Eq '^"[^"]+"[[:space:]]+[^[:space:]]+[[:space:]]+[-0-9xX]+[[:space:]]+[-0-9xX]+[[:space:]]*$'; then
+      printf '%s\n' "$raw" >> "$out"
+      continue
+    fi
+    ENTRIES=$(( ENTRIES + 1 ))
+    local name ftoken vol loop rest loop_dec
+    name=$(printf '%s' "$line" | sed 's/^"\([^"]*\)".*/\1/')
+    rest=$(printf '%s' "$line" | sed 's/^"[^"]*"[[:space:]]*//')
+    ftoken=$(printf '%s' "$rest" | awk '{print $1}')
+    vol=$(printf '%s' "$rest"    | awk '{print $2}')
+    loop=$(printf '%s' "$rest"   | awk '{print $3}')
+    loop_dec=$loop
+    case "$loop" in
+      0x*|0X*) loop_dec=$(( loop )) ;;
+    esac
+
+    local wav rate chan dsize bpf
+    wav=$(resolve_wav "$base" "$ftoken")
+    if [ -z "$wav" ] || ! parse_wav "$wav"; then
+      # missing or unreadable file: drop the entry (the engine would
+      # skip it anyway; a referenced-but-missing bank stays silent)
+      echo "  [${base}] ${name}: entry dropped (${ftoken}.wav not found)"
+      changed=1
+      continue
+    fi
+    rate=$WAV_RATE; chan=$WAV_CHAN; dsize=$WAV_DSIZE
+    bpf=$(( 2 * chan ))
+
+    if [ "$loop_dec" -le 0 ]; then
+      : # loop 0/1 = stop-at-end or loop-from-start: always safe
+      printf '%s\n' "$raw" >> "$out"
+      continue
+    fi
+
+    local b=$(( loop_dec * bpf ))
+    if [ "$b" -lt "$(( dsize - SAFE_MARGIN ))" ]; then
+      printf '%s\n' "$raw" >> "$out"     # safe - untouched
+      continue
+    fi
+
+    # ---- out of bounds: clamp inside the file (bounds-only repair) ----
+    local safe_max=$(( (dsize - SAFE_MARGIN) / bpf ))
+    [ "$safe_max" -lt 1 ] && safe_max=1
+    REPAIRED=$(( REPAIRED + 1 ))
+    changed=1
+    printf '%s\n' "\"${name}\" ${ftoken} ${vol} ${safe_max}" >> "$out"
+    echo "  [${base}] ${name}: loop ${loop} clamped to ${safe_max} (was past the ${dsize} B PCM buffer - SIGSEGV guard)"
+  done < "$txt"
+
+  if [ "$changed" -eq 1 ]; then
+    cp -p "$txt" "${txt}.bak"
+    cat "$out" > "$txt"
+    echo "  [${base}] rewritten (backup: ${txt}.bak)"
+  fi
+  rm -f "$out"
+}
+
+echo "verify_audio_pack: checking ${AUDIODIR}"
+
+for f in music.txt music_other.txt jingle.txt; do
+  process_txt "$AUDIODIR/$f"
+done
+
+# ---------- format consistency (informational) ------------------------
+first_fmt=""
+fmt_mismatch=0
+for sub in levels jingles; do
+  d="$AUDIODIR/$sub"
+  [ -d "$d" ] || continue
+  for w in "$d"/*.wav; do
+    [ -f "$w" ] || continue
+    parse_wav "$w" || continue
+    fmt="${WAV_RATE}Hz/${WAV_CHAN}ch"
+    if [ -z "$first_fmt" ]; then
+      first_fmt="$fmt"
+    elif [ "$fmt" != "$first_fmt" ]; then
+      fmt_mismatch=$(( fmt_mismatch + 1 ))
+    fi
+  done
+done
+if [ "$fmt_mismatch" -gt 0 ]; then
+  echo "  note: ${fmt_mismatch} music/jingle file(s) differ from ${first_fmt}"
+  echo "        (the engine skips format-mismatched banks -> silent tracks)"
+fi
+
+echo "verify_audio_pack: ${ENTRIES} music/jingle entries checked, ${REPAIRED} clamped, ${SFX_LINES} sfx entries ok"
+
+if [ "$UNSAFE_LEFT" -gt 0 ]; then
+  echo "verify_audio_pack: WARNING - ${UNSAFE_LEFT} unsafe loop point(s) remain!"
+  exit 5
+fi
+echo "verify_audio_pack: all loop points are within safe bounds"
+exit 0

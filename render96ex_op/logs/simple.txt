@@ -1,0 +1,6 @@
+Render96ex R36S Optimized v0.4.2 - session summary log
+======================================================
+One line per session:
+date | version | result | fps mode | music state | attempts | exit code | duration
+
+results: ok / ok-install / recovered / recovered-music-off / failed / no-rom / bad-rom / pm-old / restore-failed

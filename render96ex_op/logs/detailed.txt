@@ -1,0 +1,14 @@
+Render96ex R36S Optimized v0.4.2 - HYPER detailed session log
+==============================================================
+This file is appended automatically on every start of the port.
+It records EVERYTHING: system snapshot (kernel, device model,
+cpu, memory, storage, battery, temperature, firmware), the full
+launcher and game output (timestamped line by line), the active
+settings, the music pack state, the split-archive restore state
+(parts/ -> restool/, with checksums), and complete crash
+telemetry (exit code, signal, fatal reason, kernel segfault/OOM
+evidence).
+
+When it grows past ~1 MB it rotates to detailed.old.txt.
+
+Share this file (plus simple.txt) when reporting problems.
