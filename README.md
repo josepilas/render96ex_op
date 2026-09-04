@@ -1,4 +1,9 @@
+
 # Render96ex — R36S Optimized Edition
+
+<p align="center">
+  <img src="https://i.ibb.co/jF1YfZm/Chat-GPT-Image-4-de-set-de-2026-13-37-49-clean-1.webp" alt="Render96ex — R36S Optimized Edition" width="100%">
+</p>
 
 **Version 0.4.2 — Public Release**
 Maintained and released by **José Pilas**
