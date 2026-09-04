@@ -3,7 +3,7 @@
   <game>
     <path>./render96ex_op.sh</path>
     <name>Render96ex R36S Optimized</name>
-    <desc>Super Mario 64 is the first Super Mario game to feature 3D. Discover the precursor to Mario Odyssey in this boosted version with the support of enhanced 3d models, HD textures, HQ musics and sounds, R36S optimized v0.4.2 (music fix, 60 fps default, full session logging, community split-volume packaging).</desc>
+    <desc>Super Mario 64 is the first Super Mario game to feature 3D. Discover the precursor to Mario Odyssey in this boosted version with the support of enhanced 3d models, HD textures, HQ musics and sounds, R36S optimized v0.4.3 (music fix, 60 fps default, terminal loading screen, full session logging, community split-volume packaging).</desc>
     <releasedate>19960929T000000</releasedate>
     <developer>Nintendo</developer>
     <publisher>Nintendo</publisher>

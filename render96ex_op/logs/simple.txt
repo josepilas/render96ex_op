@@ -1,6 +1,7 @@
-Render96ex R36S Optimized v0.4.2 - session summary log
+Render96ex R36S Optimized v0.4.3 - session summary log
 ======================================================
 One line per session:
 date | version | result | fps mode | music state | attempts | exit code | duration
 
-results: ok / ok-install / recovered / recovered-music-off / failed / no-rom / bad-rom / pm-old / restore-failed
+results: ok / ok-install / failed / no-rom / bad-rom / pm-old / restore-failed
+rc: 0 = menu exit, 130/143 = intentional quit (SIGINT / force-quit hotkey)

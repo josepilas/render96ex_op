@@ -55,6 +55,42 @@
 #   * parts/ can be deleted after a successful install to free
 #     ~92 MB - see parts/README.txt.
 #
+# v0.4.3 - STABILITY + TERMINAL BOOT (by José Pilas):
+#   * THE CRASH GUARD / "DISABLE THE MUSIC WHEN IT CRASHES"
+#     FEATURE IS GONE - CUT COMPLETELY.  The game does not crash
+#     anymore, and the guard misread normal quits: quitting via
+#     the game's own Exit option, or via the PortMaster force-quit
+#     hotkey, can leave with a SIGNAL code (SIGTERM = 143), which
+#     the guard counted as a crash - it then showed the "crashed"
+#     screen, disabled the HQ music, and the next start re-copied
+#     the whole ~230 MB pack just to disable it again.  Now the
+#     game is started exactly ONCE: exit codes 0 / 130 / 143 are
+#     normal quits (menu exit / SIGINT / force quit), everything
+#     else is only LOGGED - the full telemetry (exit code, fatal
+#     reason, kernel segfault/OOM evidence) stays in
+#     logs/detailed.txt.  No retry loop, no dialogs, no
+#     conf/ost_disabled, the music pack is never touched.
+#     Installs coming from v0.4.2 self-heal on the first start:
+#     leftover ost_disabled / disabled-pack state is cleaned up
+#     and the HQ pack is reinstalled once.
+#   * TERMINAL BOOT - the loading screen from the terminal boot
+#     report: "Loading... Please Wait." + the compact RENDER96EX
+#     logo + the compact star, drawn directly on /dev/tty0 before
+#     anything else, cleared again on a clean exit (a failure
+#     prints "Render96ex failed." + the log path on the console).
+#   * The launcher output no longer scrolls over the boot screen:
+#     everything still goes to logs/detailed.txt (timestamped
+#     line by line), but the visible terminal now shows the
+#     loading screen until the game window opens.
+#   * tools/restore_parts.sh: the "echo: write error: Broken
+#     pipe" messages during the first-boot extraction are fixed
+#     (they were harmless - an early-exiting awk closed the pipe
+#     while echo was still writing; the restore itself was always
+#     verified OK).  The game's raw output is now also kept in
+#     logs/game_last.txt (new; small, overwritten every start) -
+#     the timestamping writer for detailed.txt flushes in bursts,
+#     so the fatal-reason reader needed a reliably flushed source.
+#
 # v4 history ("MUSIC + NORMAL SPEED + NO CRASH"), kept intact:
 #   1. HQ MUSIC that actually plays - the DynOS audio engine loads
 #      every track into RAM before the game starts; the 32 kHz
@@ -132,12 +168,69 @@ if [ -s "$SIMPLE" ] && [ "$(wc -l < "$SIMPLE" 2>/dev/null || echo 0)" -gt 500 ];
   tail -n 250 "$SIMPLE" > "${SIMPLE}.tmp" 2>/dev/null && mv -f "${SIMPLE}.tmp" "$SIMPLE"
 fi
 
+# ----------------------------------------------------------------------
+# v0.4.3 TERMINAL BOOT - the /dev/tty0 helpers from the terminal boot
+# report.  Everything the player sees on the handheld console is
+# written DIRECTLY to /dev/tty0; the log redirect below never scrolls
+# it away.  pm_tty_chmod makes the tty writable on firmwares where the
+# port does not already own it (ESUDO when the firmware provides it),
+# pm_tty_clear resets the screen (ESC c), pm_tty_message shows a short
+# message (failure / info), pm_tty_splash_compact draws the compact
+# loading screen (fits small 4:3 terminals, plain ASCII only - no
+# broken encodings, same layout as the terminal boot report:
+# message, logo, star).
+# ----------------------------------------------------------------------
+pm_tty_chmod() {
+  [ -e /dev/tty0 ] || return 0
+  $ESUDO chmod 666 /dev/tty0 2>/dev/null
+  return 0
+}
+
+pm_tty_clear() {
+  [ -w /dev/tty0 ] && printf '\033c' > /dev/tty0 2>/dev/null
+  return 0
+}
+
+pm_tty_message() { # $1 = short message for the console (multi-line ok)
+  [ -w /dev/tty0 ] || return 0
+  pm_tty_clear
+  printf '%s\n' "$1" > /dev/tty0 2>/dev/null
+  return 0
+}
+
+pm_tty_splash_compact() {
+  [ -e /dev/tty0 ] || return 0
+  pm_tty_chmod
+  [ -w /dev/tty0 ] || return 0
+  pm_tty_clear
+  cat > /dev/tty0 2>/dev/null <<'R96SPLASH'
+Loading... Please Wait.
+
+ ____ ___ _     _    ____
+|  _ \_ _| |   / \  / ___|
+| |_) | || |  / _ \ \___ \
+|  __/| || |_| ___ \ ___) |
+|_|  |___|____/_/ \_\____/
+
+       /\
+      //\\
+ ____//__\\____
+ \.-//----\\-./
+  \v/      \v/
+  /\\      //\
+ //_\\____//_\\
+'----\\--//----`
+      \\//
+       \/
+
+R96SPLASH
+  return 0
+}
+
 SESSION_EPOCH=$(date +%s)
 SESSION_RESULT="startup"
 ATTEMPT=0
 GAME_RC=0
-CRASHED=0
-MUSIC_OFF=0
 SUMMARY_WRITTEN=0
 
 # one-line session summary in logs/simple.txt (runs on EVERY exit path)
@@ -152,31 +245,49 @@ finish_session() {
     fps=$(awk '/^60fps/ { print ($NF == "true") ? "60" : "30" }' "${CONFDIR}sm64config.txt" 2>/dev/null)
     [ -n "$fps" ] || fps="?"
   fi
-  if [ -f "${CONFDIR}ost_disabled" ]; then
-    music="disabled"
-  elif [ -d "${GAMEDIR}/dynos/audio" ]; then
+  if [ -d "${GAMEDIR}/dynos/audio" ]; then
     music="on"
   else
     music="orig"
   fi
-  printf '[%s] v0.4.2 %-22s | fps:%s | music:%s | attempts:%d | rc:%d | %02d:%02d:%02d\n' \
+  printf '[%s] v0.4.3 %-22s | fps:%s | music:%s | attempts:%d | rc:%d | %02d:%02d:%02d\n' \
     "$(date '+%F %T')" "${SESSION_RESULT:-unknown}" "$fps" "$music" "$ATTEMPT" "$GAME_RC" \
     "$dur_h" "$dur_m" "$dur_s" >> "$SIMPLE" 2>/dev/null
   echo "--- session summary appended to logs/simple.txt ---"
+  # v0.4.3 terminal boot: clean exits clear the loading screen from
+  # the console; failure results keep their message on the tty
+  case "${SESSION_RESULT:-unknown}" in
+    failed|no-rom|bad-rom|pm-old|restore-failed|startup)
+      pm_tty_message "Render96ex failed.
+Check render96ex_op/logs/detailed.txt."
+      ;;
+    *)
+      pm_tty_clear
+      ;;
+  esac
   return 0
 }
 trap finish_session EXIT
 
 # capture EVERYTHING (launcher + game output) in logs/detailed.txt, with a
 # per-line timestamp when awk supports strftime (gawk/busybox awk do), plain
-# append otherwise.  Output still reaches the terminal for SSH/console runs.
+# append otherwise.  v0.4.3: the LOG is the only destination for this text -
+# the visible terminal belongs to the /dev/tty0 loading screen (see the
+# terminal boot report), so the boot screen stays clean until the game window
+# opens instead of being scrolled away by debug text.  To watch a run live:
+#   tail -f render96ex_op/logs/detailed.txt
 if printf '' | awk 'BEGIN { exit (strftime("%Y") + 0 < 2000) }' 2>/dev/null; then
-  exec > >(awk -v LOG="$DETAILED" '{ print strftime("[%Y-%m-%d %H:%M:%S]") " " $0 >> LOG; close(LOG); print; fflush() }') 2>&1
+  exec > >(awk -v LOG="$DETAILED" '{ print strftime("[%Y-%m-%d %H:%M:%S]") " " $0 >> LOG; close(LOG) }') 2>&1
 else
-  exec > >(tee -a "$DETAILED") 2>&1
+  exec >> "$DETAILED" 2>&1
 fi
 
-echo "================ SESSION $(date '+%F %T') - Render96ex R36S Optimized v0.4.2 ================"
+# draw the loading screen on the console BEFORE anything else - it stays
+# visible through the whole boot (and through the first-start restore +
+# install) until the game window opens
+pm_tty_splash_compact
+
+echo "================ SESSION $(date '+%F %T') - Render96ex R36S Optimized v0.4.3 ================"
 
 # ----------------------------------------------------------------------
 # HYPER detailed session header: full system + environment snapshot
@@ -255,10 +366,6 @@ if [ -f "${CONFDIR}sm64config.txt" ]; then
 else
   echo "    (no user config yet - the 60fps-on default will be installed on first start)"
 fi
-
-# remember where THIS session starts in the detailed log, so crash
-# analysis only greps the current session
-LOG_START_OFFSET=$(stat -c %s "$DETAILED" 2>/dev/null || echo 0)
 
 export LD_LIBRARY_PATH="${GAMEDIR}/libs.${DEVICE_ARCH}:$LD_LIBRARY_PATH"
 export PATH="${GAMEDIR}/bin.${DEVICE_ARCH}:${PATH}"
@@ -346,9 +453,12 @@ if [ -d "${OLDDIR}" ] && [ ! -f "${CONFDIR}.migrated" ]; then
   touch "${CONFDIR}.migrated"
 fi
 
-# leftovers from v3/v4 (disabled packs, old markers, one-time fix markers)
+# leftovers from the v1-v3 builds AND from the v0.4.2 crash guard (which
+# could leave the music disabled): v0.4.3 has no crash guard at all, so this
+# heals any install that was left with the music turned off - the markers are
+# removed here and the HQ pack is re-deployed once below
 if [ -d "${GAMEDIR}/dynos/audio.crashed-disabled" ]; then
-  echo "--- removing the v3 disabled-pack leftovers ---"
+  echo "--- removing the old crash-guard disabled-pack leftover (the crash guard is gone in v0.4.3) ---"
   rm -rf "${GAMEDIR}/dynos/audio.crashed-disabled"
 fi
 rm -f "${CONFDIR}ost_disabled" "${AUDIO_DST}/.r36s-pack-v3" "${CONFDIR}.v4-speedfix" 2>/dev/null
@@ -417,10 +527,7 @@ deploy_pack() {
   return 1
 }
 
-if [ -f "${CONFDIR}ost_disabled" ]; then
-  echo "--- note: the HQ music pack is disabled (persistent audio-device failure in a"
-  echo "          earlier session). delete conf/ost_disabled to try again."
-elif [ -d "${AUDIO_SRC}" ]; then
+if [ -d "${AUDIO_SRC}" ]; then
   if [ ! -f "${PACK_MARKER}" ] || [ ! -f "${AUDIO_DST}/music.txt" ]; then
     echo "--- installing the HQ music pack (22.05 kHz stereo, one-time copy of ~230 MB) ---"
     if ! deploy_pack; then
@@ -496,55 +603,68 @@ fi
 [[ "$CFW_NAME" = *"ArkOS"* ]] && cp "${GAMEDIR}/asoundrc" "${HOME}/.asoundrc"
 
 # ----------------------------------------------------------------------
-# Launch with the v0.4 crash guard and full telemetry:
-#   - exit 0                       : normal quit
-#   - exit 1  (game sys_fatal)     : the reason is in logs/detailed.txt
-#                                    (audio device, wav format, ...)
-#                                    music-device failures disable the
-#                                    music pack for this session and
-#                                    restart; anything else retries once
-#   - exit >=128 (killed by signal): crash - retry, then disable the
-#                                    music pack and restart so the
-#                                    session is always playable
-#   Every abnormal exit is logged in logs/detailed.txt with its exit
-#   code, the fatal reason, the kernel OOM lines and the kernel
-#   segfault lines (fault address + PC), and summarized in
-#   logs/simple.txt.  A session is NEVER lost: the guard restarts the
-#   game automatically.
+# v0.4.3: LAUNCH ONCE - the v0.4.2 crash guard is CUT (see the changelog
+# at the top).  The game is stable now, and the guard misread NORMAL
+# quits as crashes: the game's own Exit option and the PortMaster
+# Start+Select force-quit can leave with a signal code (SIGTERM = 143),
+# the guard then "recovered" the session, showed the stability-guard
+# screen, disabled the HQ music and re-copied the ~230 MB pack on the
+# next start.  Exit codes are now read the PortMaster way:
+#     0   = normal quit (the game's own Exit option)
+#     130 = SIGINT  - interrupted, counts as intentional
+#     143 = SIGTERM - the force-quit hotkey, counts as intentional
+#   Anything else is LOGGED ONLY - full telemetry (exit code, the
+#   game's fatal reason, kernel segfault/OOM evidence) goes to
+#   logs/detailed.txt.  No retry loop, no dialogs, and the music
+#   pack is never touched.
 # ----------------------------------------------------------------------
-MAX_ATTEMPTS=3
 
 echo "--- memory before launch: $(mem_available_mb) MB available ---"
 
-while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
-  ATTEMPT=$(( ATTEMPT + 1 ))
+# reclaim memory (best effort, helps on 1 GB devices)
+$ESUDO sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches' >/dev/null 2>&1
 
-  # reclaim memory (best effort, helps on 1 GB devices)
-  $ESUDO sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches' >/dev/null 2>&1
+ATTEMPT=1
+echo "--- game start ---"
+# the game's raw output ALSO lands in logs/game_last.txt (small, overwritten
+# every start): the timestamping writer for detailed.txt flushes in bursts,
+# so game_last.txt is the reliable place to read the game's last words from
+# right after it exits (everything still reaches logs/detailed.txt too)
+./sm64.us.f3dex2e.${DEVICE_ARCH} --savepath ./conf/ 2>&1 | tee "${LOGS_DIR}/game_last.txt"
+GAME_RC=${PIPESTATUS[0]}
 
-  echo "--- game start (attempt $ATTEMPT of $MAX_ATTEMPTS) ---"
-  ./sm64.us.f3dex2e.${DEVICE_ARCH} --savepath ./conf/
-  GAME_RC=$?
+# the preload hack is only for the game - take it away from the PortMaster
+# cleanup commands that run next (kills the harmless "cannot be preloaded"
+# ld.so noise that used to end every session's log)
+unset LD_PRELOAD
 
-  if [ $GAME_RC -eq 0 ] || [ $GAME_RC -eq 130 ]; then
-    echo "--- game exit (code $GAME_RC) after $(( $(date +%s) - SESSION_EPOCH ))s of session ---"
-    break
-  fi
-
-  CRASHED=1
+if [ $GAME_RC -eq 0 ] || [ $GAME_RC -eq 130 ] || [ $GAME_RC -eq 143 ]; then
+  echo "--- game exit (code $GAME_RC) after $(( $(date +%s) - SESSION_EPOCH ))s of session ---"
+  [ $GAME_RC -eq 130 ] && echo "    (code 130 = SIGINT - intentional quit)"
+  [ $GAME_RC -eq 143 ] && echo "    (code 143 = SIGTERM - the force-quit hotkey counts as a normal quit)"
+  # no crash: first-install sessions keep their label, everything else is a plain OK
+  [ "$SESSION_RESULT" = "ok-install" ] || SESSION_RESULT="ok"
+else
+  # abnormal exit: TELEMETRY ONLY - no retry, no dialogs, no music changes.
+  # The game does not crash anymore; if this ever fires, the log has the
+  # full story and the next start is just a normal start again.
   echo ""
-  echo "!!!!!!!!!!!!!!!!!!!!!!! CRASH DETECTED !!!!!!!!!!!!!!!!!!!!!!!"
-  echo "!! game closed unexpectedly (exit code $GAME_RC, attempt $ATTEMPT)"
-  echo "!! time of crash: $(date '+%F %T')   memory available: $(mem_available_mb) MB"
+  echo "!!!!!!!!!!!!!!!!!!!!!! ABNORMAL EXIT !!!!!!!!!!!!!!!!!!!!!!"
+  echo "!! the game closed unexpectedly (exit code $GAME_RC)"
+  echo "!! time: $(date '+%F %T')   memory available: $(mem_available_mb) MB"
 
   # give the log writer a moment to flush the game's last words
-  sleep 0.2 2>/dev/null
+  # (the writer closes the log after every line, but the pipe itself
+  # needs a moment on slow ARM cores before every line has landed)
+  sleep 0.5 2>/dev/null
 
   if [ $GAME_RC -eq 1 ]; then
     # the game's own fatal error handler: the exact reason was printed
-    # to the log just before it died - show it here too
+    # to the log just before it died - show it here too (from the raw,
+    # already-flushed game output; detailed.txt itself may still be
+    # buffered in the timestamping writer at this moment)
     echo "   the game reported a fatal error:"
-    tail -c +$(( LOG_START_OFFSET + 1 )) "$DETAILED" 2>/dev/null | grep -iE "DynOS_|sys_fatal|fatal|unable to load|could not open" | tail -n 4 | sed 's/^/     /'
+    grep -iE "DynOS_|sys_fatal|fatal|unable to load|could not open" "${LOGS_DIR}/game_last.txt" 2>/dev/null | tail -n 4 | sed 's/^/     /'
   else
     case $GAME_RC in
       137) echo "   exit 137 = SIGKILL: most likely the kernel OOM-killer (not enough RAM)." ;;
@@ -561,40 +681,10 @@ while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
     echo "   kernel evidence:"
     echo "$KERN" | sed 's/^/     /'
   fi
-  echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-
-  # decide the fallback
-  if [ $ATTEMPT -lt $MAX_ATTEMPTS ] && [ -d "${GAMEDIR}/dynos/audio" ]; then
-    if [ $ATTEMPT -eq 1 ]; then
-      echo "!! crash guard: retrying once (transient crash check)"
-    else
-      echo "!! crash guard: disabling the HQ music pack and restarting with the original audio"
-      MUSIC_OFF=1
-      touch "${CONFDIR}ost_disabled"
-      mv "${GAMEDIR}/dynos/audio" "${GAMEDIR}/dynos/audio.crashed-disabled"
-    fi
-  else
-    break
-  fi
-done
-
-if [ $CRASHED -eq 1 ]; then
-  if [ $GAME_RC -eq 0 ] || [ $GAME_RC -eq 130 ]; then
-    # a retry recovered the session
-    if [ $MUSIC_OFF -eq 1 ]; then
-      SESSION_RESULT="recovered-music-off"
-      show_msg "Stability guard" "Heads-up: the game closed unexpectedly,\nso the HQ music pack was disabled and the\ngame restarted with the original audio.\n\nTo try the fixed music again later,\ndelete the file\n\n  conf/ost_disabled\n\nin the render96ex_op folder.\n\nIf this keeps happening, please share\n\n  logs/detailed.txt and logs/simple.txt\n\nfrom the render96ex_op folder.\n\nPress SELECT to close this window."
-    else
-      SESSION_RESULT="recovered"
-      show_msg "Stability guard" "Heads-up: the game closed unexpectedly\nonce but recovered on retry.\n\nIf this keeps happening, please share\n\n  logs/detailed.txt and logs/simple.txt\n\nfrom the render96ex_op folder.\n\nPress SELECT to close this window."
-    fi
-  else
-    SESSION_RESULT="failed"
-    show_msg "Stability guard" "The game keeps closing unexpectedly.\n\nPlease share the files\n\n  logs/detailed.txt and logs/simple.txt\n\nfrom the render96ex_op folder so the\ncrash can be analyzed, then try a full\nre-install of the port.\n\nPress SELECT to close this window."
-  fi
-else
-  # no crash: first-install sessions keep their label, everything else is a plain OK
-  [ "$SESSION_RESULT" = "ok-install" ] || SESSION_RESULT="ok"
+  echo "!! Full telemetry saved to logs/detailed.txt - nothing was changed:"
+  echo "!! no retry, no dialogs, the music pack stays installed."
+  echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+  SESSION_RESULT="failed"
 fi
 
 echo "--- memory after exit: $(mem_available_mb) MB available ---"

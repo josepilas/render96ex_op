@@ -1,5 +1,5 @@
 {
-    "version": "0.4.2",
+    "version": "0.4.3",
     "name": "render96ex_op.zip",
     "items": [
         "render96ex_op.sh",
@@ -13,7 +13,7 @@
         ],
         "desc": "Super Mario 64 is the first Super Mario game to feature 3D. Discover the precursor to Mario Odyssey in this boosted version with the support of enhanced 3d models, HD textures, HQ musics and sounds.",
         "desc_md": null,
-        "inst": "R36S Optimized v0.4.2: put your Super Mario 64 USA rom (ANY file name, .z64 / .v64 / .n64) in the render96ex_op/original folder - it is detected, converted and verified automatically. Ships the community music fix (22.05 kHz STEREO, crash-free loop points, ~157 MB RAM) so the HQ music actually plays on 1 GB devices, runs at 60 FPS BY DEFAULT (toggle 30/60 in Options -> Graphics any time) and keeps a hyper-detailed log (logs/detailed.txt + logs/simple.txt) of every session, including crashes. GitHub-friendly packaging: the installer payload travels as 6 community-built compressed 7z volumes in parts/ (16 MiB each) and the restool/ folder is rebuilt from them automatically and fully verified (volume md5s, per-file CRC, file count and size, executable bits) on the first start - a static 7-Zip for the handheld is bundled in tools/7zzs.",
+        "inst": "R36S Optimized v0.4.3: put your Super Mario 64 USA rom (ANY file name, .z64 / .v64 / .n64) in the render96ex_op/original folder - it is detected, converted and verified automatically. Ships the community music fix (22.05 kHz STEREO, crash-free loop points, ~157 MB RAM) so the HQ music actually plays on 1 GB devices, runs at 60 FPS BY DEFAULT (toggle 30/60 in Options -> Graphics any time) and keeps a hyper-detailed log (logs/detailed.txt + logs/simple.txt) of every session. New in v0.4.3: a terminal loading screen (Loading... Please Wait. + RENDER96EX logo + star, drawn on the console until the game window opens) and the old crash guard is gone - quitting by the game menu or the force-quit hotkey is a normal quit, the music is never disabled anymore. GitHub-friendly packaging: the installer payload travels as 6 community-built compressed 7z volumes in parts/ (16 MiB each) and the restool/ folder is rebuilt from them automatically and fully verified (volume md5s, per-file CRC, file count and size, executable bits) on the first start - a static 7-Zip for the handheld is bundled in tools/7zzs.",
         "inst_md": null,
         "genres": [
             "platformer"

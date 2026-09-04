@@ -1,4 +1,5 @@
-# render96ex_op v0.4.2 - split volume manifest
+# render96ex_op v0.4.3 - split volume manifest
+# (volume files unchanged since v0.4.2 - the community-built set)
 #
 # The big installer payload now ships DIRECTLY as compressed 7z
 # volumes (no restool.zip wrapper): each parts/<target>.7z.001

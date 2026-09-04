@@ -1,6 +1,6 @@
 #!/bin/bash
 # =====================================================================
-# tools/restore_parts.sh - v0.4.2 split-volume self-restore support
+# tools/restore_parts.sh - v0.4.3 split-volume self-restore support
 #
 # This file is SOURCED (not executed) by render96ex_op.sh and by
 # tools/install_mario64.  It provides two functions:
@@ -231,14 +231,19 @@ restore_split_parts() {
         echo "   all $nv volume checksums OK"
 
         # ---------- 4) archive header sanity (needs every volume) ----------
+        # v0.4.3: the awk below deliberately has NO "exit" - an early-exiting
+        # awk closes the pipe while echo is still writing the ~3000-line 7z
+        # listing into it, which printed "echo: write error: Broken pipe"
+        # (twice) during the first-boot extraction.  The value is collected
+        # in a variable and printed in END instead: same result, no noise.
         local listout nvol totsize
         listout=$("$z" l "$vol" 2>/dev/null) || listout=""
-        nvol=$(echo "$listout" | awk -F'= ' '/^Volumes =/ {print $2; exit}' | tr -d ' \r')
-        totsize=$(echo "$listout" | awk -F'= ' '/^Total Physical Size =/ {print $2; exit}' | tr -d ' \r')
+        nvol=$(printf '%s\n' "$listout" | awk -F'= ' '/^Volumes =/ {v=$2} END {print v}' | tr -d ' \r')
+        totsize=$(printf '%s\n' "$listout" | awk -F'= ' '/^Total Physical Size =/ {v=$2} END {print v}' | tr -d ' \r')
         if [ -z "$nvol" ]; then
             # not a split archive: a single 7z file
             nvol=1
-            totsize=$(echo "$listout" | awk -F'= ' '/^Physical Size =/ {print $2; exit}' | tr -d ' \r')
+            totsize=$(printf '%s\n' "$listout" | awk -F'= ' '/^Physical Size =/ {v=$2} END {print v}' | tr -d ' \r')
         fi
         if [ -z "$totsize" ]; then
             echo "   !! could not read the volume set header of ${rel} - the set is"
